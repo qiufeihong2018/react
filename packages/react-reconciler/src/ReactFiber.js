@@ -133,7 +133,21 @@ if (__DEV__) {
     hasBadMapPolyfill = true;
   }
 }
-
+/**
+ * FiberNode 类用于构建 fiber 架构中的节点。
+ * 
+ * Fiber 是 React 重新实现的虚拟 DOM 树的遍历和更新算法，用于提高渲染性能。
+ * 此类定义了节点的各种属性，包括但不限于：
+ * - 节点类型和标签
+ * - 属性和状态
+ * - 子节点和兄弟节点的关系
+ * - 更新和副作用的标记
+ * 
+ * @param {WorkTag} tag 节点的标签，用于标识不同的节点类型。
+ * @param {mixed} pendingProps 节点的待处理属性。
+ * @param {null | string} key 节点的唯一标识符。
+ * @param {TypeOfMode} mode 节点的渲染模式。
+ */
 function FiberNode(
   this: $FlowFixMe,
   tag: WorkTag,
@@ -141,6 +155,7 @@ function FiberNode(
   key: null | string,
   mode: TypeOfMode,
 ) {
+  // 实例属性
   // Instance
   this.tag = tag;
   this.key = key;
@@ -148,34 +163,43 @@ function FiberNode(
   this.type = null;
   this.stateNode = null;
 
+  // Fiber 链结构属性
   // Fiber
-  this.return = null;
-  this.child = null;
-  this.sibling = null;
-  this.index = 0;
+  this.return = null; // 父节点
+  this.child = null; // 第一个子节点
+  this.sibling = null; // 同级节点
+  this.index = 0; // 在兄弟节点中的索引
 
+  // Refs 相关属性
   this.ref = null;
   this.refCleanup = null;
 
-  this.pendingProps = pendingProps;
-  this.memoizedProps = null;
-  this.updateQueue = null;
-  this.memoizedState = null;
-  this.dependencies = null;
+  // 更新和状态属性
+  this.pendingProps = pendingProps; // 待处理的属性
+  this.memoizedProps = null; // 缓存的属性
+  this.updateQueue = null; // 更新队列
+  this.memoizedState = null; // 缓存的状态
+  this.dependencies = null; // 依赖项
 
+  // 渲染模式
   this.mode = mode;
 
+  // 效果标记
   // Effects
-  this.flags = NoFlags;
-  this.subtreeFlags = NoFlags;
-  this.deletions = null;
+  this.flags = NoFlags; // 基本标记
+  this.subtreeFlags = NoFlags; // 子树的标记
+  this.deletions = null; // 删除的节点
 
+  // Lanes 相关属性，用于处理并发渲染的优先级
   this.lanes = NoLanes;
   this.childLanes = NoLanes;
 
+  // 另一个版本的 fiber，用于回溯和比较
   this.alternate = null;
 
+  // 性能优化相关的属性，仅在开发模式下启用
   if (enableProfilerTimer) {
+    // 初始化为 NaN 以避免 V8 性能问题
     // Note: The following is done to avoid a v8 performance cliff.
     //
     // Initializing the fields below to smis and later updating them with
@@ -193,31 +217,33 @@ function FiberNode(
     this.selfBaseDuration = Number.NaN;
     this.treeBaseDuration = Number.NaN;
 
-    // It's okay to replace the initial doubles with smis after initialization.
-    // This won't trigger the performance cliff mentioned above,
-    // and it simplifies other profiler code (including DevTools).
+    // 初始化为 0 或 -1，用于实际计算和优化
     this.actualDuration = 0;
     this.actualStartTime = -1;
     this.selfBaseDuration = 0;
     this.treeBaseDuration = 0;
   }
 
+  // 开发模式下的额外调试信息
   if (__DEV__) {
+    // 调试信息
     // This isn't directly used but is handy for debugging internals:
     this._debugInfo = null;
     this._debugOwner = null;
+    // 栈和任务信息，仅在启用相关选项时存在
     if (enableOwnerStacks) {
       this._debugStack = null;
       this._debugTask = null;
     }
+    // 标记是否需要重新挂载
     this._debugNeedsRemount = false;
     this._debugHookTypes = null;
+    // 防止扩展实例，用于优化
     if (!hasBadMapPolyfill && typeof Object.preventExtensions === 'function') {
       Object.preventExtensions(this);
     }
   }
 }
-
 // This is a constructor function, rather than a POJO constructor, still
 // please ensure we do the following:
 // 1) Nobody should add any instance methods on this. Instance methods can be
