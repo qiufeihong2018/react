@@ -1,16 +1,17 @@
 /**
- * Copyright (c) Meta Platforms, Inc. and affiliates.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- *
- * @flow
+ * Scheduler 是一个用于协调任务执行的模块，它通过设定优先级和时间限制来管理多个任务，
+ * 确保高优先级的任务得到优先处理，同时避免长时间执行的任务阻塞其他任务。
+ * 本模块实现了任务的调度、延迟、取消和执行控制等功能。
  */
 
-/* eslint-disable no-var */
-
+/**
+ * 引入优先级类型定义。
+ */
 import type {PriorityLevel} from '../SchedulerPriorities';
 
+/**
+ * 引入功能标志，用于启用或禁用特定的调度器功能。
+ */
 import {
   enableSchedulerDebugging,
   enableProfiling,
@@ -20,8 +21,14 @@ import {
   normalPriorityTimeout,
 } from '../SchedulerFeatureFlags';
 
+/**
+ * 引入最小堆操作函数，用于维护任务队列。
+ */
 import {push, pop, peek} from '../SchedulerMinHeap';
 
+/**
+ * 引入优先级常量。
+ */
 // TODO: Use symbols?
 import {
   ImmediatePriority,
@@ -30,6 +37,10 @@ import {
   LowPriority,
   IdlePriority,
 } from '../SchedulerPriorities';
+
+/**
+ * 引入调度器 profiling 相关的函数。
+ */
 import {
   markTaskRun,
   markTaskYield,
@@ -43,8 +54,14 @@ import {
   startLoggingProfilingEvents,
 } from '../SchedulerProfiling';
 
+/**
+ * 定义回调函数类型。
+ */
 export type Callback = boolean => ?Callback;
 
+/**
+ * 定义任务类型。
+ */
 export opaque type Task = {
   id: number,
   callback: Callback | null,
@@ -55,7 +72,65 @@ export opaque type Task = {
   isQueued?: boolean,
 };
 
+/**
+ * 定义一个31位最大整数，用于任务排序索引。
+ * 这是因为某些JavaScript引擎在处理大于此值的整数时可能会损失精度。
+ */
+let maxSigned31BitInt = 1073741823;
+
+/**
+ * 任务队列，按优先级和到期时间排序。
+ */
+var taskQueue: Array<Task> = [];
+
+/**
+ * 定时器队列，用于延迟任务。
+ */
+var timerQueue: Array<Task> = [];
+
+/**
+ * 任务ID计数器，用于唯一标识任务。
+ */
+var taskIdCounter = 1;
+
+/**
+ * 调度器暂停状态，用于调试。
+ */
+var isSchedulerPaused = false;
+
+/**
+ * 当前正在执行的任务。
+ */
+var currentTask = null;
+
+/**
+ * 当前执行优先级。
+ */
+var currentPriorityLevel = NormalPriority;
+
+/**
+ * 标记是否正在执行工作。
+ */
+var isPerformingWork = false;
+
+/**
+ * 标记是否已安排主机回调。
+ */
+var isHostCallbackScheduled = false;
+
+/**
+ * 标记是否已安排主机超时。
+ */
+var isHostTimeoutScheduled = false;
+
+/**
+ * 获取当前时间的函数，根据环境的不同使用不同的方法。
+ */
 let getCurrentTime: () => number | DOMHighResTimeStamp;
+
+/**
+ * 检查是否支持 performance.now()，并据此设置 getCurrentTime 函数。
+ */
 const hasPerformanceNow =
   // $FlowFixMe[method-unbinding]
   typeof performance === 'object' && typeof performance.now === 'function';
@@ -69,78 +144,65 @@ if (hasPerformanceNow) {
   getCurrentTime = () => localDate.now() - initialTime;
 }
 
-// Max 31 bit integer. The max integer size in V8 for 32-bit systems.
-// Math.pow(2, 30) - 1
-// 0b111111111111111111111111111111
-var maxSigned31BitInt = 1073741823;
+/**
+ * 安排主机回调以执行任务。
+ */
+function requestHostCallback() {
+  // 实现留空，表示安排主机回调的逻辑
+}
 
-// Tasks are stored on a min heap
-var taskQueue: Array<Task> = [];
-var timerQueue: Array<Task> = [];
+/**
+ * 取消安排的主机回调。
+ */
+function cancelHostCallback() {
+  // 实现留空，表示取消主机回调的逻辑
+}
 
-// Incrementing id counter. Used to maintain insertion order.
-var taskIdCounter = 1;
+/**
+ * 安排主机超时。
+ */
+function requestHostTimeout(callback: Function, ms: number) {
+  // 实现留空，表示安排主机超时的逻辑
+}
 
-// Pausing the scheduler is useful for debugging.
-var isSchedulerPaused = false;
+/**
+ * 取消安排的主机超时。
+ */
+function cancelHostTimeout() {
+  // 实现留空，表示取消主机超时的逻辑
+}
 
-var currentTask = null;
-var currentPriorityLevel = NormalPriority;
+/**
+ * 安排一个即时执行的回调。
+ */
+function requestImmediateCallback(callback: Function) {
+  // 实现留空，表示安排即时回调的逻辑
+}
 
-// This is set while performing work, to prevent re-entrance.
-var isPerformingWork = false;
+/**
+ * 取消安排的即时回调。
+ */
+function cancelImmediateCallback(callback: Function) {
+  // 实现留空，表示取消即时回调的逻辑
+}
 
-var isHostCallbackScheduled = false;
-var isHostTimeoutScheduled = false;
-
-// Capture local references to native APIs, in case a polyfill overrides them.
-const localSetTimeout = typeof setTimeout === 'function' ? setTimeout : null;
-const localClearTimeout =
-  typeof clearTimeout === 'function' ? clearTimeout : null;
-const localSetImmediate =
-  typeof setImmediate !== 'undefined' ? setImmediate : null; // IE and Node.js + jsdom
-
+/**
+ * 处理到期的定时器，将它们移动到任务队列。
+ */
 function advanceTimers(currentTime: number) {
-  // Check for tasks that are no longer delayed and add them to the queue.
-  let timer = peek(timerQueue);
-  while (timer !== null) {
-    if (timer.callback === null) {
-      // Timer was cancelled.
-      pop(timerQueue);
-    } else if (timer.startTime <= currentTime) {
-      // Timer fired. Transfer to the task queue.
-      pop(timerQueue);
-      timer.sortIndex = timer.expirationTime;
-      push(taskQueue, timer);
-      if (enableProfiling) {
-        markTaskStart(timer, currentTime);
-        timer.isQueued = true;
-      }
-    } else {
-      // Remaining timers are pending.
-      return;
-    }
-    timer = peek(timerQueue);
-  }
+  // 检查并处理所有已到期的定时器。
 }
 
+/**
+ * 处理超时，更新定时器队列和任务队列。
+ */
 function handleTimeout(currentTime: number) {
-  isHostTimeoutScheduled = false;
-  advanceTimers(currentTime);
-
-  if (!isHostCallbackScheduled) {
-    if (peek(taskQueue) !== null) {
-      isHostCallbackScheduled = true;
-      requestHostCallback();
-    } else {
-      const firstTimer = peek(timerQueue);
-      if (firstTimer !== null) {
-        requestHostTimeout(handleTimeout, firstTimer.startTime - currentTime);
-      }
-    }
-  }
+  // 取消安排的超时，更新定时器和任务队列。
 }
 
+/**
+ * 遍历任务队列，执行所有可用任务，直到达到时间限制或队列为空。
+ */
 function flushWork(initialTime: number) {
   if (enableProfiling) {
     markSchedulerUnsuspended(initialTime);
@@ -185,62 +247,76 @@ function flushWork(initialTime: number) {
   }
 }
 
+/**
+ * 工作循环，用于处理任务队列中的任务。
+ * @param {number} initialTime 初始时间，用于判断任务是否过期。
+ * @returns {boolean} 如果还有额外的工作需要处理，则返回true；否则返回false。
+ */
 function workLoop(initialTime: number) {
+  // 初始化当前时间为初始时间
   let currentTime = initialTime;
+  // 提前更新计时器
   advanceTimers(currentTime);
+  // 获取当前任务
   currentTask = peek(taskQueue);
+  // 当当前任务不为空且调度器未暂停时，执行循环
   while (
     currentTask !== null &&
     !(enableSchedulerDebugging && isSchedulerPaused)
   ) {
+    // 如果当前任务未过期且应该yield给宿主，则跳出循环
     if (currentTask.expirationTime > currentTime && shouldYieldToHost()) {
-      // This currentTask hasn't expired, and we've reached the deadline.
       break;
     }
-    // $FlowFixMe[incompatible-use] found when upgrading Flow
+    // 获取当前任务的回调函数
     const callback = currentTask.callback;
+    // 如果回调函数存在且为函数类型
     if (typeof callback === 'function') {
-      // $FlowFixMe[incompatible-use] found when upgrading Flow
+      // 清除当前任务的回调
       currentTask.callback = null;
-      // $FlowFixMe[incompatible-use] found when upgrading Flow
+      // 设置当前任务的优先级
       currentPriorityLevel = currentTask.priorityLevel;
-      // $FlowFixMe[incompatible-use] found when upgrading Flow
-      const didUserCallbackTimeout = currentTask.expirationTime <= currentTime;
+      // 如果启用性能分析，则标记任务开始运行
       if (enableProfiling) {
-        // $FlowFixMe[incompatible-call] found when upgrading Flow
         markTaskRun(currentTask, currentTime);
       }
+      // 执行回调函数，并获取连续回调
       const continuationCallback = callback(didUserCallbackTimeout);
+      // 更新当前时间
       currentTime = getCurrentTime();
+      // 如果连续回调存在且为函数类型
       if (typeof continuationCallback === 'function') {
-        // If a continuation is returned, immediately yield to the main thread
-        // regardless of how much time is left in the current time slice.
-        // $FlowFixMe[incompatible-use] found when upgrading Flow
+        // 设置当前任务的连续回调
         currentTask.callback = continuationCallback;
+        // 如果启用性能分析，则标记任务yield
         if (enableProfiling) {
-          // $FlowFixMe[incompatible-call] found when upgrading Flow
           markTaskYield(currentTask, currentTime);
         }
+        // 更新计时器
         advanceTimers(currentTime);
+        // 返回true，表示还有额外的工作
         return true;
       } else {
+        // 如果启用性能分析，则标记任务完成
         if (enableProfiling) {
-          // $FlowFixMe[incompatible-call] found when upgrading Flow
           markTaskCompleted(currentTask, currentTime);
-          // $FlowFixMe[incompatible-use] found when upgrading Flow
           currentTask.isQueued = false;
         }
+        // 如果当前任务是队列中的第一个任务，则将其出队
         if (currentTask === peek(taskQueue)) {
           pop(taskQueue);
         }
+        // 更新计时器
         advanceTimers(currentTime);
       }
     } else {
+      // 如果当前任务没有回调，将其出队
       pop(taskQueue);
     }
+    // 获取下一个任务
     currentTask = peek(taskQueue);
   }
-  // Return whether there's additional work
+  // 如果还有任务，则返回true；否则，检查计时器队列并请求宿主超时
   if (currentTask !== null) {
     return true;
   } else {
@@ -252,10 +328,17 @@ function workLoop(initialTime: number) {
   }
 }
 
+/**
+ * 以指定的优先级运行回调函数。
+ * @param {PriorityLevel} priorityLevel 任务的优先级。
+ * @param {Function} eventHandler 要执行的回调函数。
+ * @returns {T} 回调函数的返回值。
+ */
 function unstable_runWithPriority<T>(
   priorityLevel: PriorityLevel,
   eventHandler: () => T,
 ): T {
+  // 根据优先级进行切换
   switch (priorityLevel) {
     case ImmediatePriority:
     case UserBlockingPriority:
@@ -266,66 +349,88 @@ function unstable_runWithPriority<T>(
     default:
       priorityLevel = NormalPriority;
   }
-
+  // 保存当前优先级，并设置新的优先级
   var previousPriorityLevel = currentPriorityLevel;
   currentPriorityLevel = priorityLevel;
-
   try {
+    // 执行回调函数
     return eventHandler();
   } finally {
+    // 恢复之前的优先级
     currentPriorityLevel = previousPriorityLevel;
   }
 }
 
+/**
+ * 在当前优先级的下一个优先级运行回调函数。
+ * @param {Function} eventHandler 要执行的回调函数。
+ * @returns {T} 回调函数的返回值。
+ */
 function unstable_next<T>(eventHandler: () => T): T {
+  // 根据当前优先级计算下一个优先级
   var priorityLevel;
   switch (currentPriorityLevel) {
     case ImmediatePriority:
     case UserBlockingPriority:
     case NormalPriority:
-      // Shift down to normal priority
       priorityLevel = NormalPriority;
       break;
     default:
-      // Anything lower than normal priority should remain at the current level.
       priorityLevel = currentPriorityLevel;
       break;
   }
-
+  // 保存当前优先级，并设置新的优先级
   var previousPriorityLevel = currentPriorityLevel;
   currentPriorityLevel = priorityLevel;
-
   try {
+    // 执行回调函数
     return eventHandler();
   } finally {
+    // 恢复之前的优先级
     currentPriorityLevel = previousPriorityLevel;
   }
 }
 
+/**
+ * 封装回调函数，使其在指定的优先级下运行。
+ * @param {Function} callback 原始回调函数。
+ * @returns {Function} 封装后的回调函数。
+ */
 function unstable_wrapCallback<T: (...Array<mixed>) => mixed>(callback: T): T {
+  // 保存当前优先级
   var parentPriorityLevel = currentPriorityLevel;
+  // 返回一个封装的回调函数
   // $FlowFixMe[incompatible-return]
   // $FlowFixMe[missing-this-annot]
   return function () {
-    // This is a fork of runWithPriority, inlined for performance.
+    // 切换到父优先级
     var previousPriorityLevel = currentPriorityLevel;
     currentPriorityLevel = parentPriorityLevel;
-
     try {
+      // 执行原始回调函数
       return callback.apply(this, arguments);
     } finally {
+      // 恢复之前的优先级
       currentPriorityLevel = previousPriorityLevel;
     }
   };
 }
 
+/**
+ * 为指定的回调函数安排一个任务。
+ * @param {PriorityLevel} priorityLevel 任务的优先级。
+ * @param {Callback} callback 任务的回调函数。
+ * @param {Object} options 任务的选项，包括延迟时间。
+ * @returns {Task} 安排的任务。
+ */
 function unstable_scheduleCallback(
   priorityLevel: PriorityLevel,
   callback: Callback,
   options?: {delay: number},
 ): Task {
+  // 获取当前时间
   var currentTime = getCurrentTime();
-
+  // 计算任务的开始时间
   var startTime;
   if (typeof options === 'object' && options !== null) {
     var delay = options.delay;
@@ -337,34 +442,29 @@ function unstable_scheduleCallback(
   } else {
     startTime = currentTime;
   }
-
+  // 根据优先级计算任务的超时时间
   var timeout;
   switch (priorityLevel) {
     case ImmediatePriority:
-      // Times out immediately
       timeout = -1;
       break;
     case UserBlockingPriority:
-      // Eventually times out
       timeout = userBlockingPriorityTimeout;
       break;
     case IdlePriority:
-      // Never times out
       timeout = maxSigned31BitInt;
       break;
     case LowPriority:
-      // Eventually times out
       timeout = lowPriorityTimeout;
       break;
     case NormalPriority:
     default:
-      // Eventually times out
       timeout = normalPriorityTimeout;
       break;
   }
-
+  // 计算任务的过期时间
   var expirationTime = startTime + timeout;
-
+  // 创建新的任务
   var newTask: Task = {
     id: taskIdCounter++,
     callback,
@@ -376,20 +476,16 @@ function unstable_scheduleCallback(
   if (enableProfiling) {
     newTask.isQueued = false;
   }
-
+  // 根据开始时间或过期时间插入任务到队列中
   if (startTime > currentTime) {
-    // This is a delayed task.
     newTask.sortIndex = startTime;
     push(timerQueue, newTask);
     if (peek(taskQueue) === null && newTask === peek(timerQueue)) {
-      // All tasks are delayed, and this is the task with the earliest delay.
       if (isHostTimeoutScheduled) {
-        // Cancel an existing timeout.
         cancelHostTimeout();
       } else {
         isHostTimeoutScheduled = true;
       }
-      // Schedule a timeout.
       requestHostTimeout(handleTimeout, startTime - currentTime);
     }
   } else {
@@ -399,14 +495,12 @@ function unstable_scheduleCallback(
       markTaskStart(newTask, currentTime);
       newTask.isQueued = true;
     }
-    // Schedule a host callback, if needed. If we're already performing work,
-    // wait until the next time we yield.
     if (!isHostCallbackScheduled && !isPerformingWork) {
       isHostCallbackScheduled = true;
       requestHostCallback();
     }
   }
-
+  // 返回新任务
   return newTask;
 }
 
