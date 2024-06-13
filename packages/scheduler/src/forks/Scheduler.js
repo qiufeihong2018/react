@@ -503,11 +503,17 @@ function unstable_scheduleCallback(
   // 返回新任务
   return newTask;
 }
+/**
+ * Scheduler是一个用于控制任务执行的模块，它决定了哪些任务应该优先执行，
+ * 以及在何时执行它们。这是一组用于调度和管理任务的不稳定（实验性）API。
+ */
 
+// 切换调度器的暂停状态
 function unstable_pauseExecution() {
   isSchedulerPaused = true;
 }
 
+// 恢复调度器的执行，如果当前没有计划的任务，则安排一个新的任务
 function unstable_continueExecution() {
   isSchedulerPaused = false;
   if (!isHostCallbackScheduled && !isPerformingWork) {
@@ -516,10 +522,12 @@ function unstable_continueExecution() {
   }
 }
 
+// 获取任务队列中的第一个任务
 function unstable_getFirstCallbackNode(): Task | null {
   return peek(taskQueue);
 }
 
+// 取消一个任务，将其从队列中移除
 function unstable_cancelCallback(task: Task) {
   if (enableProfiling) {
     if (task.isQueued) {
@@ -529,42 +537,40 @@ function unstable_cancelCallback(task: Task) {
     }
   }
 
-  // Null out the callback to indicate the task has been canceled. (Can't
-  // remove from the queue because you can't remove arbitrary nodes from an
-  // array based heap, only the first one.)
+  // Null out the callback to indicate the task has been canceled.
   task.callback = null;
 }
 
+// 获取当前的优先级水平
 function unstable_getCurrentPriorityLevel(): PriorityLevel {
   return currentPriorityLevel;
 }
 
+// 控制消息循环是否正在运行
 let isMessageLoopRunning = false;
+// 任务超时ID
 let taskTimeoutID: TimeoutID = (-1: any);
 
-// Scheduler periodically yields in case there is other work on the main
-// thread, like user events. By default, it yields multiple times per frame.
-// It does not attempt to align with frame boundaries, since most tasks don't
-// need to be frame aligned; for those that do, use requestAnimationFrame.
+// 默认的帧间隔，用于控制yield的频率
 let frameInterval = frameYieldMs;
+// 当前消息循环的起始时间
 let startTime = -1;
 
+// 判断是否应该将执行权yield给主机环境
 function shouldYieldToHost(): boolean {
   const timeElapsed = getCurrentTime() - startTime;
   if (timeElapsed < frameInterval) {
-    // The main thread has only been blocked for a really short amount of time;
-    // smaller than a single frame. Don't yield yet.
     return false;
   }
-  // Yield now.
   return true;
 }
 
+// 请求进行一次绘制
 function requestPaint() {}
 
+// 强制设置帧率
 function forceFrameRate(fps: number) {
   if (fps < 0 || fps > 125) {
-    // Using console['error'] to evade Babel and ESLint
     console['error'](
       'forceFrameRate takes a positive int between 0 and 125, ' +
         'forcing frame rates higher than 125 fps is not supported',
@@ -574,31 +580,21 @@ function forceFrameRate(fps: number) {
   if (fps > 0) {
     frameInterval = Math.floor(1000 / fps);
   } else {
-    // reset the framerate
     frameInterval = frameYieldMs;
   }
 }
 
+// 一直执行工作直到截止时间
 const performWorkUntilDeadline = () => {
   if (isMessageLoopRunning) {
     const currentTime = getCurrentTime();
-    // Keep track of the start time so we can measure how long the main thread
-    // has been blocked.
     startTime = currentTime;
 
-    // If a scheduler task throws, exit the current browser task so the
-    // error can be observed.
-    //
-    // Intentionally not using a try-catch, since that makes some debugging
-    // techniques harder. Instead, if `flushWork` errors, then `hasMoreWork` will
-    // remain true, and we'll continue the work loop.
     let hasMoreWork = true;
     try {
       hasMoreWork = flushWork(currentTime);
     } finally {
       if (hasMoreWork) {
-        // If there's more work, schedule the next message event at the end
-        // of the preceding one.
         schedulePerformWorkUntilDeadline();
       } else {
         isMessageLoopRunning = false;
@@ -607,39 +603,47 @@ const performWorkUntilDeadline = () => {
   }
 };
 
+/**
+ * 根据环境选择合适的调度方法
+ * 这段代码的目的是为了在不同的执行环境中找到一种方式来尽快执行一个指定的任务，
+ * 而且这种方式需要能够在任务队列的前面插入任务，以尽可能早地执行任务。
+ * 
+ * @remarks
+ * 这里使用了条件判断来选择不同的执行策略：
+ * - 如果环境支持 `setImmediate`，则使用它来安排任务，因为 `setImmediate` 会在当前执行栈清空后立刻执行，
+ *   这意味着它可以在下一次事件循环的开始时执行，这对于需要尽快响应但又不能在当前执行栈中执行的任务非常有用。
+ * - 如果环境支持 `MessageChannel`，则使用它来创建一个消息通道，并通过发送消息来触发任务的执行。
+ *   这种方式也可以在下一次事件循环的开始时执行任务，而且在某些环境中可能比 `setImmediate` 更加可靠。
+ * - 如果以上两种方式都不支持，则任务将无法在下一次事件循环的开始时执行，代码将退回到默认的行为，
+ *   即在当前执行栈允许的情况下尽可能早地执行任务。
+ */
 let schedulePerformWorkUntilDeadline;
+ // 检查是否支持 setImmediate，如果支持，则使用它来安排任务
 if (typeof localSetImmediate === 'function') {
-  // Node.js and old IE.
-  // There's a few reasons for why we prefer setImmediate.
-  //
-  // Unlike MessageChannel, it doesn't prevent a Node.js process from exiting.
-  // (Even though this is a DOM fork of the Scheduler, you could get here
-  // with a mix of Node.js 15+, which has a MessageChannel, and jsdom.)
-  // https://github.com/facebook/react/issues/20756
-  //
-  // But also, it runs earlier which is the semantic we want.
-  // If other browsers ever implement it, it's better to use it.
-  // Although both of these would be inferior to native scheduling.
   schedulePerformWorkUntilDeadline = () => {
+     // 使用 setImmediate 安排任务，任务会在当前执行栈清空后立刻执行
     localSetImmediate(performWorkUntilDeadline);
   };
+  // 检查是否支持 MessageChannel，如果支持，则使用它来创建一个消息通道并安排任务
 } else if (typeof MessageChannel !== 'undefined') {
-  // DOM and Worker environments.
-  // We prefer MessageChannel because of the 4ms setTimeout clamping.
+    // 创建一个新的 MessageChannel
   const channel = new MessageChannel();
+     // 获取消息通道的端口，并设置其 onmessage 事件处理程序为要执行的任务
   const port = channel.port2;
   channel.port1.onmessage = performWorkUntilDeadline;
   schedulePerformWorkUntilDeadline = () => {
+        // 通过向消息通道的端口发送消息来安排任务，消息内容可以为空
     port.postMessage(null);
   };
+   // 如果以上两种方式都不支持，则任务将无法在下一次事件循环的开始时执行
 } else {
-  // We should only fallback here in non-browser environments.
   schedulePerformWorkUntilDeadline = () => {
-    // $FlowFixMe[not-a-function] nullable value
+     // 默认行为，直接执行任务
     localSetTimeout(performWorkUntilDeadline, 0);
   };
 }
 
+// 请求主机回调
 function requestHostCallback() {
   if (!isMessageLoopRunning) {
     isMessageLoopRunning = true;
@@ -647,22 +651,23 @@ function requestHostCallback() {
   }
 }
 
+// 请求主机超时
 function requestHostTimeout(
   callback: (currentTime: number) => void,
   ms: number,
 ) {
-  // $FlowFixMe[not-a-function] nullable value
   taskTimeoutID = localSetTimeout(() => {
     callback(getCurrentTime());
   }, ms);
 }
 
+// 取消主机超时
 function cancelHostTimeout() {
-  // $FlowFixMe[not-a-function] nullable value
   localClearTimeout(taskTimeoutID);
-  taskTimeoutID = ((-1: any): TimeoutID);
+  taskTimeoutID = (-1: any);
 }
 
+// 导出Scheduler的API
 export {
   ImmediatePriority as unstable_ImmediatePriority,
   UserBlockingPriority as unstable_UserBlockingPriority,
@@ -684,6 +689,7 @@ export {
   forceFrameRate as unstable_forceFrameRate,
 };
 
+// 如果启用 profiling，导出相关的 profiling API
 export const unstable_Profiling: {
   startLoggingProfilingEvents(): void,
   stopLoggingProfilingEvents(): ArrayBuffer | null,
